@@ -61,15 +61,20 @@ const int debounced_pins[] = {UP, DOWN, RUNPAUSE};
 /* User output controls */
 #define LID A3			// pin for wiring the lid contacts
 #define LID_OVERRIDE A4		// pin for wiring the lid override contact
-#define LTRELAY 5		// pin for turning the lights on
+#define LTRELAY 8		// pin for turning the lights on
 #define PZO 9			// pin for controlling the beeper
 
 /* Display controls */
 #define CLK 4			// pin for clocking the 74164
-#define DATA 3			// pin for loading the 74164
+#define DATA A5			// pin for loading the 74164
+
+/* Status RGB LED Pins */
+#define RED_LED 3
+#define GREEN_LED 5
+#define BLUE_LED 6
 
 /* Timer details */
-#define DEFAULT_RUN_TIME 5	// the timer value on restart
+#define DEFAULT_RUN_TIME 150	// the timer value on restart
 #define MAX_RUN_TIME 10 * 60	// the maximum amount of time that can be set
 
 /* Button details */
@@ -87,19 +92,11 @@ const int debounced_pins[] = {UP, DOWN, RUNPAUSE};
 #define LIGHT_ON_PITCH 880     // beep frequency when the lights are coming on
 #define LIGHT_OFF_PITCH 440    // when the lights are coming off
 #define PANIC_PITCH 1569       // when the door is opened before 0
-#define ZERO_PWM 240
 
-#define SHORTBEEP 50		// beep lengths
-#define LONGBEEP 1000
-#define PANICBEEP 5000
-#define ZEROEPOCH 1000
-
-/* useful constants */
-const uint8_t CLK_LOW = ~(1 << CLK);
-const uint8_t CLK_HIGH = (1 << CLK);
-
-const uint8_t DATA_LOW = ~(1 << DATA);
-const uint8_t DATA_HIGH = (1 << DATA);
+// beep lengths
+#define SHORTBEEP 50	       // up/down press and hold
+#define LONGBEEP 1000          // start/pause/end lights
+#define PANICBEEP 2000         // lid open
 
 /* 7-segment display constants */
 const int digit_selector_lines[] = {10, 13, 12, 11}; // lines to digit index table
@@ -125,7 +122,8 @@ enum states {
   RUN,   // running
   PAUSE, // pausing
   ZERO,  // timer complete
-  PANIC}; // lid lifted
+  PANIC // lid lifted
+};
 
 // the current state
 states state;
@@ -233,7 +231,8 @@ void init_display() {
   /* Sets up the display communication and interrupt */
 
   // set pin outputs
-  DDRD |= (1 << CLK) | (1 << DATA);
+  pinMode(CLK, OUTPUT);
+  pinMode(DATA, OUTPUT);
 
   // write shift clock low, to begin with
   digitalWrite(CLK, LOW);
@@ -287,15 +286,11 @@ void write_data(uint8_t data) {
 
   for(uint8_t i=0; i<8; i++) {
     // set data line
-    if (data & mask) {
-      PORTD |= DATA_HIGH;
-    } else {
-      PORTD &= DATA_LOW;
-    }
+    digitalWrite(DATA, data & mask);
 
     // toggle clock line (settle time is fast enough on the 328p)
-    PORTD |= CLK_HIGH;
-    PORTD &= CLK_LOW;
+    digitalWrite(CLK, HIGH);
+    digitalWrite(CLK, LOW);
 
     data <<= 1;
   }
@@ -311,6 +306,10 @@ void setup() {
 
   pinMode(LTRELAY, OUTPUT);
   digitalWrite(LTRELAY, LOW);
+
+  pinMode(RED_LED, OUTPUT);
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(BLUE_LED, OUTPUT);
 
   Serial.begin(9600);
 
@@ -360,7 +359,7 @@ void write_digit(int segment, int digit) {
 void change_set_run_time(int delta) {
   set_run_time += delta;
 
-  if (set_run_time < 0) {
+  if (set_run_time <= 0) {
     set_run_time = MAX_RUN_TIME;
   } else if (set_run_time > MAX_RUN_TIME) {
     set_run_time %= MAX_RUN_TIME;
@@ -373,10 +372,6 @@ void short_beep() {
   tone(PZO, BEEP_PITCH, SHORTBEEP);
 }
 
-void panic_beep() {
-  tone(PZO, PANIC_PITCH, PANICBEEP);
-}
-
 void enable_lights() {
   tone(PZO, LIGHT_ON_PITCH, LONGBEEP);
   digitalWrite(LTRELAY, HIGH);
@@ -385,6 +380,13 @@ void enable_lights() {
 void disable_lights() {
   digitalWrite(LTRELAY, LOW);
   tone(PZO, LIGHT_OFF_PITCH, LONGBEEP);
+  delay(LONGBEEP);
+}
+
+void panic_disable_lights() {
+  digitalWrite(LTRELAY, LOW);
+  tone(PZO, PANIC_PITCH, PANICBEEP);
+  delay(PANICBEEP);
 }
 
 bool am_locked() {
@@ -426,6 +428,57 @@ uint8_t consume_depress_events() {
   return events;
 }
 
+int last_state = -1;
+unsigned long last_status_light = 0;
+
+void set_status_light() {
+  if (state != last_state || millis() > last_status_light + 100) {
+    last_state = state;
+    last_status_light = millis();
+
+    switch (state) {
+    case PAUSE:
+    case AWAIT:
+    {
+      if (am_locked()) {
+	// solid green
+	set_color(0, 255, 0);
+      } else {
+	set_color(255, 0, 0);
+      }
+      break;
+    }
+    case RUN:
+    {
+      // purple (for UV)
+      set_color(80, 0, 80);
+      break;
+    }
+    case ZERO:
+    {
+      // blinking green
+      if ((millis() / 1000) % 2) {
+	set_color(255, 255, 255);
+      } else {
+	turn_off_status();
+      }
+      break;
+    }
+    case PANIC:
+    {
+      // blinking red
+      if ((millis() / 1000) % 2) {
+	set_color(255, 0, 0);
+      } else {
+	turn_off_status();
+      }
+      break;
+    }
+    default: {} // do nothing for other states
+    }
+  }
+}
+
 void loop() {
   Serial.println("Starting main loop");
 
@@ -435,6 +488,7 @@ void loop() {
 
   while (true) {
     check_presses();
+    set_status_light();
 
     switch (state) {
     case AWAIT:
@@ -470,6 +524,7 @@ void loop() {
     case UP_PRESS:
       {
 	change_set_run_time(SLOW_INCR);
+	short_beep();
 
 	state = HOLD_TRANSITION;
 	hold_state = UP_HOLD;
@@ -481,6 +536,7 @@ void loop() {
     case DOWN_PRESS:
       {
 	change_set_run_time(-SLOW_INCR);
+	short_beep();
 
 	state = HOLD_TRANSITION;
 	hold_state = DOWN_HOLD;
@@ -492,6 +548,7 @@ void loop() {
     case UP_HOLD:
       {
 	change_set_run_time(FAST_INCR);
+	short_beep();
 
 	state = HOLD_TRANSITION;
 	hold_state = UP_HOLD;
@@ -503,6 +560,7 @@ void loop() {
     case DOWN_HOLD:
       {
 	change_set_run_time(-FAST_INCR);
+	short_beep();
 
 	state = HOLD_TRANSITION;
 	hold_state = DOWN_HOLD;
@@ -524,9 +582,7 @@ void loop() {
 	}
 
 	start_run_time = millis();
-
 	set_display_time(run_time);
-
 	consume_press_events();
 
 	enable_lights();
@@ -540,9 +596,13 @@ void loop() {
 	unsigned long seconds_passed = millis_passed / 1000;
 	const int seconds_left = run_time - seconds_passed;
 
+	set_display_time(seconds_left);
+
 	if (!am_locked()) {
 	  run_time = seconds_left;
-	  disable_lights();
+	  panic_disable_lights();
+	  consume_press_events();
+	  consume_depress_events();
 	  state = PANIC;
 	  Serial.println("Panic!");
 	}
@@ -560,15 +620,12 @@ void loop() {
 	  state = ZERO;
 	  Serial.println("Zero!");
 	}
-
-	set_display_time(seconds_left);
       }
       break;
     case ZERO:
       {
-	short_beep();
-
 	if (is_pressed(RUNPAUSE)) {
+	  short_beep();
 	  set_display_time(set_run_time);
 	  state = AWAIT;
 	}
@@ -577,7 +634,14 @@ void loop() {
       }
     case PANIC:
       {
-	if (is_pressed(RUNPAUSE)) {
+	if (press_event(RUNPAUSE)) {
+	  short_beep();
+	  consume_press_events();
+	}
+
+	if (depress_event(RUNPAUSE)) {
+	  consume_press_events();
+	  consume_depress_events();
 	  state = PAUSE;
 	}
 	break;
@@ -604,4 +668,16 @@ void loop() {
       }
     }
   }
+}
+
+void turn_off_status() {
+  digitalWrite(RED_LED, LOW);
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(BLUE_LED, LOW);
+}
+
+void set_color(int red, int green, int blue) {
+  analogWrite(RED_LED, red);
+  analogWrite(GREEN_LED, green);
+  analogWrite(BLUE_LED, blue);
 }
