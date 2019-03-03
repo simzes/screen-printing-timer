@@ -442,7 +442,7 @@ void set_status_light() {
     {
       if (am_locked()) {
 	// solid green
-	set_color(0, 255, 0);
+	set_color(0, 75, 0);
       } else {
 	set_color(255, 0, 0);
       }
