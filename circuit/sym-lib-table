@@ -1,0 +1,4 @@
+(sym_lib_table
+  (lib (name 74xx-eu)(type Legacy)(uri ${KIPRJMOD}/lib/74xx-eu.lib)(options "")(descr ""))
+  (lib (name common_anode_4x_seven_segment)(type Legacy)(uri ${KIPRJMOD}/lib/common_anode_4x_seven_segment.lib)(options "")(descr ""))
+)
